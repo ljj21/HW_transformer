@@ -63,35 +63,43 @@ class SelfAttention(nn.Module):
         # Step 1: obtain q, k, v via self.q_layer(), self.k_layer(), self.v_layer() respectively.
         # where q = Concat(q_1, ..., q_h), k = Concat(k_1, ..., k_h), q = Concat(v_1, ..., v_h)
         # the shape of q, k, v: (batch_size, seq_len, num_heads * head_dim)
-
+        q, k, v = self.q_layer(x), self.k_layer(x), self.v_layer(x)
 
         # Step 2: in order to calculate multi-head attention in paralle, reshape q, k, v first.
         # use `Tensor.view()` or `Tensor.reshape()` to reshape q, k, v to: (batch_size, seq_len, num_heads, head_dim)
-
+        q = q.view(batch_size, seq_len, self.num_head, self.head_dim)
+        k = k.view(batch_size, seq_len, self.num_head, self.head_dim)
+        v = v.view(batch_size, seq_len, self.num_head, self.head_dim)
 
         # Step 3: calculate multi-head attention in paralle: Attention(q, k, v) = softmax(qk^T / sqrt(head_dim)) v
         # Step 3.1: use `Tensor.transpose()` or `Tensor.permute()` to exchange the dim of q, k, v for matrix multiplication
         # the shape of q, v from (batch_size, seq_len, num_heads, head_dim) to (batch_size, num_heads, seq_len, head_dim)
         # the shape of k from (batch_size, seq_len, num_heads, head_dim) to (batch_size, num_heads, head_dim, seq_len)
-
+        q = q.transpose(1, 2)
+        k = k.permute(0, 2, 3, 1)
+        v = v.transpose(1, 2)
         # Step 3.2: do matrix multiplication via `torch.matmul()`: attn = qk^T / sqrt(head_dim)
         # the shape of `attn`: (batch_size, num_heads, seq_len, seq_len)
-
+        attn = torch.matmul(q, k) / math.sqrt(self.head_dim)
         # Step 3.3: fill the position of `attn` where `attn_mask==True` with value `float('-inf')` via `Tensor.masked_fill()`
-
+        if attn_mask is not None:
+            attn = attn.masked_fill(attn_mask, float('-inf'))
+        
         # Step 3.4: normalize `attn` via softmax funtion: attn = Softmax(attn) = Softmax(qk^T / sqrt(head_dim))
-        
+        attn = F.softmax(attn, dim=-1)
         # Step 3.5: apply dropout to `attn` via self.attn_drop()
-        
+        attn = self.attn_drop(attn)
         # Step 3.6: multiply v by `attn`: out = Attention(q, k, v) = attn v
         # the shape of `out`: (batch_size, num_heads, seq_len, head_dim)
-
+        out = torch.matmul(attn, v)
 
         # Step 4: use `Tensor.transpose()` and `Tensor.reshape()' to concatenate output of different heads
         # the shape of `out` from (batch_size, num_heads, seq_len, head_dim) to (batch_size, seq_len, num_heads*head_dim)
-        
+        out = out.transpose(1, 2).reshape(batch_size, seq_len, self.num_head * self.head_dim)
 
         # Step 5: obtain the final results via self.proj_layer() and self.proj_drop(): result = Dropout(MultiHead(Q, K, V)) = Dropout(Concat(head_1, ..., head_h) W^O) = Dropout(out W^O)
+        result = self.proj_layer(out)
+        result = self.proj_drop(result)
 
         # <<< TODO 1
 
@@ -193,30 +201,34 @@ class GPT(nn.Module):
 
         # >>> TODO 2: complete the forward process of GPT
         # Step 1: use torch.arange(?, dtype=torch.long, device=word_idx.device) to generate the position sequence `pos` [0, 1, ..., seq_len-1] 
-        
+        pos = torch.arange(seq_len, dtype=torch.long, device=word_idx.device)
 
         # Step 2: use self.word_token_embedding() and self.word_pos_embedding() to transfer `word_idx` and `pos` to embeddings ('token_embed` and `pos_embed`)
-
-
+        token_embed = self.word_token_embedding(word_idx)
+        pos_embed = self.word_pos_embedding(pos)
         # Step 3: use `if` to decide whether to add pos embeddings to token embeddings: x = Dropout(?) if self.no_pos else Dropout(?)       (self.drop())
-
+        x = self.drop(token_embed) if self.no_pos else self.drop(token_embed + pos_embed)
 
         # Step 4: for Auto-Regressive Language Model, the predictions for position i can depend only on the input at positions less than i.
         # Therefore, a mask is used to prevent positions from attending to subsequent positions
         # attn_mask = (0,1,...,1; 0,0,1,...,0; ...; 0,...,0) is a upper triangular matrix with shape (seq_len, seq_len)
         # Hint:
         # Step 4.1: use torch.ones(?, device=word_idx.device) to generate a matrix filled with value 1 with shape (seq_len, seq_len)
+        attn_mask = torch.ones((seq_len, seq_len), device=word_idx.device).byte()
 
         # Step 4.2: use torch.triu(?, diagonal=1) to obtain a upper triangular matrix where elements on the main diagonal are 0
+        attn_mask = torch.triu(attn_mask, diagonal=1)
 
-
-        # Step 5: use for loop to obtain the output and attention weights of transformer layers
         # define a list `attention_weights` and append the attention weights of each transformer layer into the list
-        
+        # Step 5: use for loop to obtain the output and attention weights of transformer layers
+        attention_weights = []
+        for i in range(self.num_layer):
+            x, attn = self.transformer[i](x, attn_mask)
+            attention_weights.append(attn)
 
         # Step 6: use self.norm() to normalize the output of transformer layers and then use self.language_model_head() to obtain the predictions `logits`
         # Note: do not use softmax here since it is included in the cross entropy loss function
-
+        logits = self.language_model_head(self.norm(x))
 
         # <<< TODO 2
 
@@ -290,7 +302,7 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.max_seq_len else idx[:, -self.max_seq_len:]
             # forward the model to get the logits for the index in the sequence
-            logits = self(idx_cond)
+            logits, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options

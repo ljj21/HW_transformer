@@ -81,7 +81,7 @@ if __name__ == '__main__':
     parser.add_argument('--start', type=str, default='\n', help='start of the sample, "\n" or "<|endoftext|>" or etc. Can also specify a file, use as: "FILE:prompt.txt"')
     parser.add_argument('--num_samples', type=int, default='10', help='the number of samples')
     parser.add_argument('--max_new_tokens', type=int, default='500', help='the number of tokens generated in each sample')
-    parser.add_argument('--model_name', type=str, default='gpt2', help='name of the model')
+    parser.add_argument('--model_name', type=str, default='mygpt', help='name of the model')
     parser.add_argument('--ckpt_path', type=str, default='work_dirs/quansongci', help='path to load checkpoints')
     parser.add_argument('--data_root', type=str, default='data/quansongci', help='file of training and validation data')
     parser.add_argument('--device', type=str, help='cpu or cuda')
